@@ -12,7 +12,10 @@ El código lleva las direcciones del NAS, la huella de su clave y un token para 
 ## Qué envía y dónde
 
 - **Fotos y vídeos** de las carpetas de la galería que elijas (por defecto, la de la cámara), con el lugar donde se hicieron si le das permiso.
-- **Carpetas de documentos** elegidas con el selector de Android, con todo lo que tengan dentro.
+- **Todo lo demás**: descargas, documentos, PDF, música… de todo el móvil, con sus carpetas (`Download/factura.pdf`, `Music/…`). Android pide permitir el acceso a todos los archivos. Se dejan fuera `Android/` (el espacio privado de cada app) y los ficheros ocultos.
+- **Otras carpetas** elegidas con el selector de Android, por ejemplo de una tarjeta SD.
+
+«Pausar» corta el envío al momento, también el fichero que se está enviando: el NAS no guarda nada de un fichero a medias. Lo que se desmarca deja de enviarse antes del siguiente fichero.
 
 Van al volumen elegido, dentro de la carpeta del móvil (`/Móvil/<nombre>` por defecto): las fotos por carpeta de la galería y año (`Camera/2026/IMG_1234.jpg`), los documentos con sus carpetas. Si un fichero cambia en el móvil, se envía otra vez sobre el mismo: la casa guarda la versión anterior en su historial.
 

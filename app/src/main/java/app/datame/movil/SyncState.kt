@@ -11,6 +11,7 @@ enum class Phase {
     CONNECTING,
     SCANNING,
     UPLOADING,
+    PAUSED, // the person paused it
     DONE,
     NO_NAS, // not at home, or the NAS is off
     UNAUTHORIZED, // the phone was removed in the web

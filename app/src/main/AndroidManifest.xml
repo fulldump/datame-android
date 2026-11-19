@@ -11,6 +11,11 @@
     <uses-permission
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
+    <!-- «Todo lo demás»: downloads, documents, music… Android only shows them with this one.
+         The permission is given by hand in the settings of the phone. -->
+    <uses-permission
+        android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
     <!-- Without it Android removes from the photos where they were taken. -->
     <uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION" />
 
@@ -32,6 +37,7 @@
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"
         android:label="@string/app_name"
+        android:requestLegacyExternalStorage="true"
         android:supportsRtl="true"
         android:theme="@style/Theme.Datame"
         tools:targetApi="36">

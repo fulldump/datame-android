@@ -3,6 +3,7 @@ package app.datame.movil.ui
 import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.Build
@@ -32,6 +33,7 @@ import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Lock
+import androidx.compose.material.icons.outlined.PauseCircle
 import androidx.compose.material.icons.outlined.PhotoLibrary
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Search
@@ -90,9 +92,25 @@ fun HomeScreen(model: MainViewModel) {
     var confirmUnpair by remember { mutableStateOf(false) }
     var editFolder by remember { mutableStateOf(false) }
 
+    var filesAllowed by remember { mutableStateOf(Sources.hasAllFilesAccess(context)) }
     val permissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         mediaAllowed = Sources.hasMediaPermission(context)
+        if (Build.VERSION.SDK_INT < 30) filesAllowed = Sources.hasAllFilesAccess(context)
         model.refreshBuckets(thenSync = true)
+    }
+    // Android gives the access to all the files in its own settings screen, and says nothing when coming back.
+    val allFilesSettings = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        filesAllowed = Sources.hasAllFilesAccess(context)
+        if (filesAllowed) model.enableAllFiles()
+    }
+    val askAllFiles = {
+        if (Build.VERSION.SDK_INT >= 30) {
+            val own = Intent(SystemSettings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:" + context.packageName))
+            runCatching { allFilesSettings.launch(own) }
+                .onFailure { allFilesSettings.launch(Intent(SystemSettings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)) }
+        } else {
+            permissions.launch(arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE))
+        }
     }
     val pickFolder = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) model.addTree(uri)
@@ -129,7 +147,16 @@ fun HomeScreen(model: MainViewModel) {
             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = padding.calculateTopPadding() + 4.dp, bottom = padding.calculateBottomPadding() + 32.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            item { StatusCard(status, config, onSync = model::syncNow, onRepair = { confirmUnpair = true }, onPermission = { permissions.launch(Sources.mediaPermissions()) }) }
+            item {
+                StatusCard(
+                    status, config,
+                    onSync = model::syncNow,
+                    onPause = { model.setPaused(true) },
+                    onResume = { model.setPaused(false) },
+                    onRepair = { confirmUnpair = true },
+                    onPermission = { if (config.photos && !mediaAllowed) permissions.launch(Sources.mediaPermissions()) else askAllFiles() },
+                )
+            }
 
             item {
                 Section("Qué enviar") {
@@ -157,8 +184,18 @@ fun HomeScreen(model: MainViewModel) {
                         }
                     }
                     HorizontalDivider(Modifier.padding(vertical = 8.dp))
-                    Text("Carpetas de documentos", fontWeight = FontWeight.Medium)
-                    Hint("Todo lo que haya dentro, y lo que llegue: documentos, descargas, notas…")
+                    SwitchRow("Todo lo demás", "Descargas, documentos, PDF, música… de todo el móvil, con sus carpetas", config.allFiles && filesAllowed) { on ->
+                        if (!on) model.change { it.copy(allFiles = false) }
+                        else if (filesAllowed) model.enableAllFiles()
+                        else askAllFiles()
+                    }
+                    if (config.allFiles && !filesAllowed) {
+                        Notice("Android pide permitir el acceso a todos los archivos.", "Permitir") { askAllFiles() }
+                    }
+                    if (config.allFiles && filesAllowed) Hint("Van a ${config.folder}/Download/…, ${config.folder}/Music/…, igual que en el móvil.")
+                    HorizontalDivider(Modifier.padding(vertical = 8.dp))
+                    Text("Otras carpetas", fontWeight = FontWeight.Medium)
+                    Hint(if (config.allFiles) "Ya se envía todo el móvil. Aquí puedes añadir carpetas de una tarjeta SD o de otras apps." else "Elige carpetas concretas: todo lo que haya dentro, y lo que llegue.")
                     for (tree in config.trees) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Outlined.Folder, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
@@ -241,14 +278,23 @@ fun HomeScreen(model: MainViewModel) {
 }
 
 @Composable
-private fun StatusCard(status: SyncStatus, config: Config, onSync: () -> Unit, onRepair: () -> Unit, onPermission: () -> Unit) {
+private fun StatusCard(
+    status: SyncStatus,
+    config: Config,
+    onSync: () -> Unit,
+    onPause: () -> Unit,
+    onResume: () -> Unit,
+    onRepair: () -> Unit,
+    onPermission: () -> Unit,
+) {
     val context = LocalContext.current
     val colors = MaterialTheme.colorScheme
     data class Look(val icon: ImageVector, val title: String, val tint: Color, val container: Color)
-    val look = when (status.phase) {
+    val look = if (config.paused) Look(Icons.Outlined.PauseCircle, "En pausa", colors.onTertiaryContainer, colors.tertiaryContainer) else when (status.phase) {
         Phase.IDLE -> Look(Icons.Outlined.Schedule, "Aún no se ha enviado nada", colors.onSurfaceVariant, colors.surface)
         Phase.CONNECTING -> Look(Icons.Outlined.Search, "Buscando el NAS…", colors.primary, colors.surface)
         Phase.SCANNING -> Look(Icons.Outlined.Search, "Mirando qué hay nuevo…", colors.primary, colors.surface)
+        Phase.PAUSED -> Look(Icons.Outlined.PauseCircle, "En pausa", colors.onTertiaryContainer, colors.tertiaryContainer)
         Phase.UPLOADING -> Look(Icons.Outlined.CloudUpload, "Enviando ${status.done + 1} de ${status.total}", colors.primary, colors.primaryContainer)
         Phase.DONE -> if (status.pending == 0 && status.failures == 0) Look(Icons.Outlined.CheckCircle, "Todo está en casa", colors.primary, colors.primaryContainer)
         else Look(Icons.Outlined.Schedule, "Quedan ${status.pending} por enviar", colors.onTertiaryContainer, colors.tertiaryContainer)
@@ -256,7 +302,7 @@ private fun StatusCard(status: SyncStatus, config: Config, onSync: () -> Unit, o
         Phase.UNAUTHORIZED -> Look(Icons.Outlined.Lock, "Este móvil ya no está autorizado", colors.error, colors.errorContainer)
         Phase.STANDBY -> Look(Icons.Outlined.CloudOff, "El NAS está en espera", colors.onTertiaryContainer, colors.tertiaryContainer)
         Phase.FULL -> Look(Icons.Outlined.ErrorOutline, "No queda espacio", colors.error, colors.errorContainer)
-        Phase.NO_PERMISSION -> Look(Icons.Outlined.PhotoLibrary, "Falta permiso para las fotos", colors.onTertiaryContainer, colors.tertiaryContainer)
+        Phase.NO_PERMISSION -> Look(Icons.Outlined.PhotoLibrary, "Falta un permiso", colors.onTertiaryContainer, colors.tertiaryContainer)
         Phase.ERROR -> Look(Icons.Outlined.ErrorOutline, "Algo no va bien", colors.error, colors.errorContainer)
     }
     Surface(shape = RoundedCornerShape(20.dp), color = look.container) {
@@ -266,25 +312,33 @@ private fun StatusCard(status: SyncStatus, config: Config, onSync: () -> Unit, o
                 Spacer(Modifier.size(12.dp))
                 Text(look.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
             }
-            if (status.phase == Phase.UPLOADING && status.total > 0) {
+            if (!config.paused && status.phase == Phase.UPLOADING && status.total > 0) {
                 LinearProgressIndicator(progress = { status.done.toFloat() / status.total }, modifier = Modifier.fillMaxWidth())
                 if (status.currentName.isNotEmpty()) {
                     val bytes = if (status.currentSize > 0) " · " + Formatter.formatShortFileSize(context, status.currentSent) + " de " + Formatter.formatShortFileSize(context, status.currentSize) else ""
                     Text(status.currentName + bytes, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
-            val waiting = waitingFor(context, config)
+            val waiting = if (config.paused) null else waitingFor(context, config)
             when {
+                config.paused -> Text(
+                    if (status.pending > 0) "No se enviará nada hasta que lo reanudes. Quedan ${status.pending} por enviar." else "No se enviará nada hasta que lo reanudes.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
                 status.message.isNotEmpty() -> Text(status.message, style = MaterialTheme.typography.bodyMedium)
                 status.phase == Phase.NO_NAS -> Text("Se enviará cuando vuelvas a casa.", style = MaterialTheme.typography.bodyMedium)
             }
             if (waiting != null && status.phase != Phase.UPLOADING) Text(waiting, style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
             Text(summary(context, status), style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
             Spacer(Modifier.height(4.dp))
-            when (status.phase) {
-                Phase.UNAUTHORIZED -> Button(onClick = onRepair) { Text("Emparejar otra vez") }
-                Phase.NO_PERMISSION -> Button(onClick = onPermission) { Text("Dar permiso") }
-                else -> Button(onClick = onSync, enabled = status.phase !in setOf(Phase.UPLOADING, Phase.CONNECTING, Phase.SCANNING)) { Text("Sincronizar ahora") }
+            when {
+                config.paused -> Button(onClick = onResume) { Text("Reanudar") }
+                status.phase == Phase.UNAUTHORIZED -> Button(onClick = onRepair) { Text("Emparejar otra vez") }
+                else -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (status.phase == Phase.NO_PERMISSION) Button(onClick = onPermission) { Text("Dar permiso") }
+                    else Button(onClick = onSync, enabled = status.phase !in setOf(Phase.UPLOADING, Phase.CONNECTING, Phase.SCANNING)) { Text("Sincronizar ahora") }
+                    OutlinedButton(onClick = onPause) { Text("Pausar") }
+                }
             }
         }
     }

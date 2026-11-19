@@ -46,6 +46,10 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
         val token = app.settings.token
         val state = app.state
         if (!config.paired) return
+        if (config.paused) {
+            state.update { it.copy(phase = Phase.PAUSED, message = "", currentName = "") }
+            return
+        }
         if (token == null) {
             state.update { it.copy(phase = Phase.UNAUTHORIZED, message = "Este móvil tiene que volver a emparejarse.") }
             return
@@ -78,9 +82,11 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
 
         state.update { it.copy(phase = Phase.SCANNING) }
         val mediaAllowed = Sources.hasMediaPermission(applicationContext)
+        val filesAllowed = Sources.hasAllFilesAccess(applicationContext)
         val files = buildList {
             addAll(Sources.media(applicationContext, config))
             for (tree in config.trees) addAll(Sources.tree(applicationContext, tree, config))
+            addAll(Sources.files(applicationContext, config))
         }
         val sent = app.log.all()
         val todo = files.filter { file ->
@@ -92,10 +98,21 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
 
         var done = 0
         var failures = 0
+        var skipped = 0 // no longer wanted: the person unchecked its folder meanwhile
         var inARow = 0
         var lastReport = 0L
         for (file in todo) {
             if (isStopped) break
+            // The settings may change while it sends: they are looked at again before each file.
+            val now = app.settings.config.value
+            if (now.paused) {
+                state.update { it.copy(phase = Phase.PAUSED, message = "", done = done, pending = todo.size - done - skipped, currentName = "", failures = failures) }
+                return
+            }
+            if (!Sources.stillWanted(file, now)) {
+                skipped++
+                continue
+            }
             val previous = sent[file.key]
             var path = previous?.path ?: join(config.folder, file.remoteDir, file.name)
             var replace = previous != null // a file that changed on the phone: its new version, over the old one
@@ -118,6 +135,7 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
                                 state.update { it.copy(currentSent = bytes) }
                             }
                         },
+                        cancelled = { isStopped || app.settings.config.value.paused },
                     )
                 } catch (e: FileNotFoundException) {
                     null // deleted while waiting its turn
@@ -126,6 +144,11 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
                 }
                 when (result) {
                     null -> break
+                    UploadResult.Cancelled -> {
+                        val paused = app.settings.config.value.paused
+                        state.update { it.copy(phase = if (paused) Phase.PAUSED else Phase.DONE, done = done, pending = todo.size - done - skipped, currentName = "", failures = failures) }
+                        return
+                    }
                     UploadResult.Sent -> {
                         app.log.record(file.key, file.size, file.modifiedSeconds, path)
                         done++
@@ -153,7 +176,7 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
                         return
                     }
                     UploadResult.Full -> {
-                        state.update { it.copy(phase = Phase.FULL, message = "El volumen «${volume.name}» está lleno.", pending = todo.size - done) }
+                        state.update { it.copy(phase = Phase.FULL, message = "El volumen «${volume.name}» está lleno.", pending = todo.size - done - skipped) }
                         return
                     }
                     is UploadResult.Failed -> {
@@ -165,17 +188,17 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
             }
             if (inARow >= 3) {
                 // The NAS stopped answering: away from home, or turned off. Next time.
-                state.update { it.copy(phase = Phase.NO_NAS, message = "Se perdió la conexión con el NAS.", done = done, pending = todo.size - done, failures = failures) }
+                state.update { it.copy(phase = Phase.NO_NAS, message = "Se perdió la conexión con el NAS.", done = done, pending = todo.size - done - skipped, failures = failures) }
                 return
             }
-            state.update { it.copy(done = done, pending = todo.size - done, failures = failures, sentTotal = app.log.count()) }
+            state.update { it.copy(done = done, pending = todo.size - done - skipped, failures = failures, sentTotal = app.log.count()) }
             if (todo.size > 1) startForeground(done, todo.size, file.name)
         }
 
-        val pending = todo.size - done
+        val pending = todo.size - done - skipped
         state.update {
             it.copy(
-                phase = if (config.photos && !mediaAllowed) Phase.NO_PERMISSION else Phase.DONE,
+                phase = if ((config.photos && !mediaAllowed) || (config.allFiles && !filesAllowed)) Phase.NO_PERMISSION else Phase.DONE,
                 message = if (failures > 0) "$failures no se pudieron enviar: se intentará otra vez." else "",
                 done = done,
                 pending = pending,

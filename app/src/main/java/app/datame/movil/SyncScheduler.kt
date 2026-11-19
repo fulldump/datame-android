@@ -34,6 +34,8 @@ object SyncScheduler {
                 // New photos and videos wake it up, a few seconds later, so a burst goes together.
                 addContentUriTrigger(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, true)
                 addContentUriTrigger(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, true)
+                // Downloads and documents too: Android indexes them as well.
+                if (config.allFiles) addContentUriTrigger(MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL), true)
                 setTriggerContentUpdateDelay(10, TimeUnit.SECONDS)
                 setTriggerContentMaxDelay(2, TimeUnit.MINUTES)
             }
@@ -44,7 +46,8 @@ object SyncScheduler {
     fun schedule(context: Context) {
         val config = DatameApp.of(context).settings.config.value
         val work = WorkManager.getInstance(context)
-        if (!config.paired) {
+        if (!config.paired || config.paused) {
+            // Paused: the pass that is sending stops too, before its next file.
             work.cancelAllWork()
             return
         }
@@ -65,7 +68,7 @@ object SyncScheduler {
      */
     fun watchMedia(context: Context, fromWorker: Boolean = false) {
         val config = DatameApp.of(context).settings.config.value
-        if (!config.paired || !config.photos) return
+        if (!config.paired || config.paused || !(config.photos || config.allFiles)) return
         WorkManager.getInstance(context).enqueueUniqueWork(
             NEW_MEDIA,
             if (fromWorker) ExistingWorkPolicy.APPEND_OR_REPLACE else ExistingWorkPolicy.REPLACE,
@@ -80,7 +83,7 @@ object SyncScheduler {
     /** «Sincronizar ahora»: right away, with any network if the person is looking at the screen. */
     fun now(context: Context) {
         val config = DatameApp.of(context).settings.config.value
-        if (!config.paired) return
+        if (!config.paired || config.paused) return
         WorkManager.getInstance(context).enqueueUniqueWork(
             NOW,
             ExistingWorkPolicy.REPLACE,

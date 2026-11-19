@@ -6,10 +6,13 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.os.Environment
 import android.provider.DocumentsContract
 import android.provider.MediaStore
+import android.webkit.MimeTypeMap
 import androidx.core.content.ContextCompat
 import java.time.Instant
+import java.io.File
 import java.time.ZoneId
 
 /** A file of the phone that may have to go to the house. */
@@ -22,6 +25,7 @@ data class LocalFile(
     val mime: String?,
     val remoteDir: String, // inside the folder of the phone: «Camera/2026», «Documentos/facturas»
     val media: Boolean,
+    val source: String, // what chose it: «bucket:<id>», «tree:<uri>» or «files»
 )
 
 /** A folder of photos of the phone, as the gallery shows it. */
@@ -101,6 +105,7 @@ object Sources {
                     MediaStore.MediaColumns.DATE_TAKEN,
                     MediaStore.MediaColumns.MIME_TYPE,
                     MediaStore.MediaColumns.BUCKET_DISPLAY_NAME,
+                    MediaStore.MediaColumns.BUCKET_ID,
                 ),
                 selection.toString(), args.toTypedArray(),
                 "${MediaStore.MediaColumns.DATE_ADDED} DESC",
@@ -112,6 +117,7 @@ object Sources {
                 val taken = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_TAKEN)
                 val mime = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.MIME_TYPE)
                 val bucket = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.BUCKET_DISPLAY_NAME)
+                val bucketId = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.BUCKET_ID)
                 while (cursor.moveToNext()) {
                     val fileSize = cursor.getLong(size)
                     val fileName = cursor.getString(name) ?: continue
@@ -134,6 +140,7 @@ object Sources {
                         mime = cursor.getString(mime),
                         remoteDir = safeName(cursor.getString(bucket) ?: "Fotos") + "/" + year,
                         media = true,
+                        source = "bucket:" + cursor.getString(bucketId),
                     )
                 }
             }
@@ -191,6 +198,7 @@ object Sources {
                             mime = mime,
                             remoteDir = safeName(folder.label) + (if (relative.isEmpty()) "" else "/$relative"),
                             media = false,
+                            source = "tree:" + folder.uri,
                         )
                     }
                 }
@@ -199,6 +207,67 @@ object Sources {
             }
         }
         return out
+    }
+
+    /** «Todo lo demás» needs the access to all the files, given by hand in the settings of the phone. */
+    fun hasAllFilesAccess(context: Context): Boolean =
+        if (Build.VERSION.SDK_INT >= 30) Environment.isExternalStorageManager()
+        else ContextCompat.checkSelfPermission(context, Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+
+    /**
+     * Everything else of the phone, with its folders as they are: «Download/factura.pdf», «Music/…».
+     * Photos and videos are left out: they go by gallery folder, as the person chose above.
+     * Android/ is left out too, it is the private space of each app, and so are hidden files.
+     */
+    fun files(context: Context, config: Config): List<LocalFile> {
+        if (!config.allFiles || !hasAllFilesAccess(context)) return emptyList()
+        val out = mutableListOf<LocalFile>()
+        val types = MimeTypeMap.getSingleton()
+        val pending = ArrayDeque(listOf(Environment.getExternalStorageDirectory() to ""))
+        var visited = 0
+        while (pending.isNotEmpty() && visited < 50000) {
+            val (dir, relative) = pending.removeFirst()
+            visited++
+            val children = dir.listFiles() ?: continue
+            for (child in children) {
+                val name = child.name
+                if (name.startsWith(".")) continue // thumbnails, caches, the bin
+                if (child.isDirectory) {
+                    if (relative.isEmpty() && name == "Android") continue
+                    pending.addLast(child to (if (relative.isEmpty()) safeName(name) else relative + "/" + safeName(name)))
+                    continue
+                }
+                val mime = types.getMimeTypeFromExtension(name.substringAfterLast('.', "").lowercase())
+                if (mime != null && (mime.startsWith("image/") || mime.startsWith("video/"))) continue
+                val size = child.length()
+                if (size <= 0) continue
+                val modifiedMillis = child.lastModified()
+                if (config.sinceMillis > 0 && modifiedMillis < config.sinceMillis) continue
+                out += LocalFile(
+                    key = "file:" + child.path,
+                    uri = Uri.fromFile(child),
+                    name = name,
+                    size = size,
+                    modifiedSeconds = modifiedMillis / 1000,
+                    mime = mime,
+                    remoteDir = relative,
+                    media = false,
+                    source = "files",
+                )
+            }
+        }
+        return out
+    }
+
+    /** Whether the person still wants it sent: they may have changed their mind while it waited its turn. */
+    fun stillWanted(file: LocalFile, config: Config): Boolean {
+        val source = file.source
+        return when {
+            source.startsWith("bucket:") -> config.photos && (config.allBuckets || source.removePrefix("bucket:") in config.buckets)
+            source.startsWith("tree:") -> config.trees.any { it.uri == source.removePrefix("tree:") }
+            source == "files" -> config.allFiles
+            else -> true
+        }
     }
 
     /** Names that are good folder names in the house. */

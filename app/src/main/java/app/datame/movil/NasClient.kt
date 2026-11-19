@@ -32,6 +32,7 @@ sealed class UploadResult {
     data object Standby : UploadResult()
     data object Full : UploadResult()
     data class Failed(val message: String) : UploadResult()
+    data object Cancelled : UploadResult()
 }
 
 class NoNasException(message: String) : IOException(message)
@@ -120,6 +121,7 @@ class NasClient(private val pin: String, private val token: String) {
         replace: Boolean,
         open: () -> InputStream,
         progress: (Long) -> Unit,
+        cancelled: () -> Boolean = { false },
     ): UploadResult {
         val root = base ?: return UploadResult.Failed("Sin conexión con el NAS")
         val url = root.newBuilder()
@@ -140,6 +142,8 @@ class NasClient(private val pin: String, private val token: String) {
                     while (true) {
                         val read = input.read(buffer)
                         if (read < 0) break
+                        // Paused: the NAS keeps nothing of an upload cut half way.
+                        if (cancelled()) throw CancelledUpload()
                         sink.write(buffer, 0, read)
                         sent += read
                         if (sent - lastReport > 512 * 1024) {
@@ -164,8 +168,12 @@ class NasClient(private val pin: String, private val token: String) {
                     else -> UploadResult.Failed("El NAS respondió ${response.code}")
                 }
             }
+        } catch (e: CancelledUpload) {
+            UploadResult.Cancelled
         } catch (e: IOException) {
-            UploadResult.Failed(e.message ?: "Se cortó la conexión")
+            if (cancelled()) UploadResult.Cancelled else UploadResult.Failed(e.message ?: "Se cortó la conexión")
         }
     }
+
+    private class CancelledUpload : IOException("Cancelado")
 }

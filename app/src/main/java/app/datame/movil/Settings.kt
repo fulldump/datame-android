@@ -32,6 +32,8 @@ data class Config(
     val allBuckets: Boolean = false,
     val buckets: Set<String> = emptySet(), // bucket ids of MediaStore: Camera, Screenshots…
     val trees: List<TreeFolder> = emptyList(),
+    val allFiles: Boolean = false, // everything else of the phone: downloads, documents, music…
+    val paused: Boolean = false,
     val sinceMillis: Long = 0, // only what appeared after this; 0 is everything
     val wifiOnly: Boolean = true,
     val chargingOnly: Boolean = false,
@@ -60,6 +62,8 @@ class Settings(context: Context) {
         trees = prefs.getString("trees", null)?.let { json ->
             JSONArray(json).let { a -> (0 until a.length()).map { a.getJSONObject(it).let { o -> TreeFolder(o.getString("uri"), o.getString("label")) } } }
         }.orEmpty(),
+        allFiles = prefs.getBoolean("allFiles", false),
+        paused = prefs.getBoolean("paused", false),
         sinceMillis = prefs.getLong("sinceMillis", 0),
         wifiOnly = prefs.getBoolean("wifiOnly", true),
         chargingOnly = prefs.getBoolean("chargingOnly", false),
@@ -79,6 +83,8 @@ class Settings(context: Context) {
             .putBoolean("allBuckets", next.allBuckets)
             .putStringSet("buckets", next.buckets)
             .putString("trees", JSONArray(next.trees.map { JSONObject().put("uri", it.uri).put("label", it.label) }).toString())
+            .putBoolean("allFiles", next.allFiles)
+            .putBoolean("paused", next.paused)
             .putLong("sinceMillis", next.sinceMillis)
             .putBoolean("wifiOnly", next.wifiOnly)
             .putBoolean("chargingOnly", next.chargingOnly)

@@ -9,6 +9,7 @@ import androidx.lifecycle.viewModelScope
 import app.datame.movil.Bucket
 import app.datame.movil.Config
 import app.datame.movil.DatameApp
+import app.datame.movil.Phase
 import app.datame.movil.NasClient
 import app.datame.movil.PairingCode
 import app.datame.movil.RemoteVolume
@@ -134,6 +135,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun syncNow() = SyncScheduler.now(getApplication())
+
+    /** Pausing stops the pass that is sending, even half way through a file; resuming sends at once. */
+    fun setPaused(paused: Boolean) {
+        change { it.copy(paused = paused) }
+        if (paused) {
+            app.state.update { if (it.phase in busy) it.copy(phase = Phase.PAUSED, currentName = "") else it }
+        } else {
+            syncNow()
+        }
+    }
+
+    /** «Todo lo demás», once Android gave the access to all the files. */
+    fun enableAllFiles() {
+        change { it.copy(allFiles = true) }
+        syncNow()
+    }
+
+    private val busy = setOf(Phase.CONNECTING, Phase.SCANNING, Phase.UPLOADING)
 
     fun unpair() {
         val context = getApplication<Application>()
